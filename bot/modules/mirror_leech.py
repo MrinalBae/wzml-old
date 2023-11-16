@@ -226,39 +226,16 @@ def _mirror_leech(bot, message, isZip=False, extract=False, isQbit=False, isLeec
         if content_type is None or re_match(r'text/html|text/plain', content_type):
             try:
                 is_gdtot = is_gdtot_link(link)
+                is_unified = is_unified_link(link)
                 is_udrive = is_udrive_link(link)
-                is_sharer = is_sharer_link(link)
                 link = direct_link_generator(link)
                 LOGGER.info(f"Generated link: {link}")
             except DirectDownloadLinkException as e:
                 LOGGER.info(str(e))
                 if str(e).startswith('ERROR:'):
                     return sendMessage(str(e), bot, message)
-    elif isQbit and not is_magnet(link):
-        if link.endswith('.torrent') or "https://api.telegram.org/file/" in link:
-            content_type = None
-        else:
-            content_type = get_content_type(link)
-        if content_type is None or re_match(r'application/x-bittorrent|application/octet-stream', content_type):
-            try:
-                resp = rget(link, timeout=10, headers = {'user-agent': 'Wget/1.12'})
-                if resp.status_code == 200:
-                    file_name = str(time()).replace(".", "") + ".torrent"
-                    with open(file_name, "wb") as t:
-                        t.write(resp.content)
-                    link = str(file_name)
-                else:
-                    return sendMessage(f"{tag} ERROR: link got HTTP response: {resp.status_code}", bot, message)
-            except Exception as e:
-                error = str(e).replace('<', ' ').replace('>', ' ')
-                if error.startswith('No connection adapters were found for'):
-                    link = error.split("'")[1]
-                else:
-                    LOGGER.error(str(e))
-                    return sendMessage(tag + " " + error, bot, message)
-        else:
-            msg = "Qb commands for torrents only. if you are trying to dowload torrent then report."
-            return sendMessage(msg, bot, message)
+
+    listener = MirrorLeechListener(bot, message, isZip, extract, isQbit, isLeech, pswd, tag, select, seed)
 
     if is_gdrive_link(link):
         if not isZip and not extract and not isLeech:
@@ -269,17 +246,14 @@ def _mirror_leech(bot, message, isZip=False, extract=False, isQbit=False, isLeec
         else:
             Thread(target=add_gd_download, args=(link, f'{DOWNLOAD_DIR}{listener.uid}', listener, is_gdtot, is_unified, is_udrive, name)).start()
     elif is_mega_link(link):
-        if not config_dict['MEGA_API_KEY']:
-            if not config_dict['MEGA_EMAIL_ID']:
-                if not config_dict['MEGA_PASSWORD']:
-                    sendMessage(f"<b>Mega Credentials Not Found</b>", bot, message)
-                    return
-        Thread(target=add_mega_download, args=(link, f'{DOWNLOAD_DIR}{listener.uid}/', listener, name)).start()
-    elif isQbit and (is_magnet(link) or ospath.exists(link)):
-        Thread(target=add_qb_torrent, args=(link, f'{DOWNLOAD_DIR}{listener.uid}', listener,
-                                            ratio, seed_time)).start()
+        if MEGA_KEY is not None:
+            Thread(target=MegaDownloader(listener).add_download, args=(link, f'{DOWNLOAD_DIR}{listener.uid}/')).start()
+        else:
+            sendMessage('MEGA_API_KEY not Provided!', bot, message)
+    elif isQbit:
+        Thread(target=QbDownloader(listener).add_qb_torrent, args=(link, f'{DOWNLOAD_DIR}{listener.uid}',
+                                                                   ratio, seed_time)).start()
     else:
-        mesg = message.text.split('\n')
         if len(mesg) > 1:
             ussr = mesg[1]
             if len(mesg) > 2:
@@ -290,52 +264,20 @@ def _mirror_leech(bot, message, isZip=False, extract=False, isQbit=False, isLeec
             auth = "Basic " + b64encode(auth.encode()).decode('ascii')
         else:
             auth = ''
-        Thread(target=add_aria2c_download, args=(link, f'{DOWNLOAD_DIR}{listener.uid}', listener, name, auth, ratio, seed_time)).start()
+        Thread(target=add_aria2c_download, args=(link, f'{DOWNLOAD_DIR}{listener.uid}', listener, name,
+		                                         auth, ratio, seed_time)).start()
 
-@new_thread
-def mir_confirm(update, context):
-    query = update.callback_query
-    user_id = query.from_user.id
-    message = query.message
-    data = query.data
-    data = data.split()
-    msg_id = int(data[2])
-    try:
-        listenerInfo = btn_listener[msg_id]
-    except KeyError:
-        return editMessage(f"<b>Download has been cancelled or already started!</b>", message)
-    listener = listenerInfo[0]
-    extra = listenerInfo[1]
-    if user_id != listener[1].from_user.id and not CustomFilters.owner_query(user_id):
-        return query.answer("You are not the owner of this download!", show_alert=True)
-    elif data[1] == 'scat':
-        c_index = int(data[3])
-        u_index = None
-        if extra[4] == c_index:
-            return query.answer(f"{CATEGORY_NAMES[c_index]} is already selected!", show_alert=True)
-        query.answer()
-        extra[4] = c_index
-        extra[5] = u_index
-    elif data[1] == 'ucat':
-        u_index = int(data[3])
-        c_index = 0
-        if extra[5] == u_index:
-            return query.answer(f"{getUserTDs(listener[1].from_user.id)[0][u_index]} is already selected!", show_alert=True)
-        query.answer()
-        extra[4] = c_index
-        extra[5] = u_index
-    elif data[1] == 'cancel':
-        query.answer()
-        del btn_listener[msg_id]
-        return editMessage(f"<b>Download has been cancelled!</b>", message)
-    elif data[1] == 'start':
-        query.answer()
-        message.delete()
-        del btn_listener[msg_id]
-        return start_ml(extra, listener)
-    timeout = listenerInfo[2] - (time() - extra[6])
-    text, btns = get_category_buttons('mir', timeout, msg_id, extra[4], extra[5], listener[1].from_user.id)
-    editMessage(text, message, btns)
+    if multi > 1:
+        sleep(4)
+        nextmsg = type('nextmsg', (object, ), {'chat_id': message.chat_id, 'message_id': message.reply_to_message.message_id + 1})
+        msg = message.text.split(maxsplit=mi+1)
+        msg[mi] = f"{multi - 1}"
+        nextmsg = sendMessage(" ".join(msg), bot, nextmsg)
+        nextmsg.from_user.id = message.from_user.id
+        multi -= 1
+        sleep(4)
+        Thread(target=_mirror_leech, args=(bot, nextmsg, isZip, extract, isQbit, isLeech)).start()
+
 
 
 
