@@ -88,6 +88,8 @@ def direct_link_generator(link: str):
         return try2link(link)
     elif is_ez4_link(link):
         return ez4(link)
+    elif any(x in domain for x in ['terabox', 'nephobox', '4funbox', 'mirrobox', 'momerybox', 'teraboxapp', '1024tera']):
+        return terabox(link)
     elif any(x in link for x in fmed_list):
         return fembed(link)
     elif any(x in link for x in ['sbembed.com', 'watchsb.com', 'streamsb.net', 'sbplay.org']):
@@ -484,6 +486,48 @@ def krakenfiles(page_link: str) -> str:
         return dl_link_json["url"]
     else:
         raise DirectDownloadLinkException(f"ERROR: Failed to acquire download URL from kraken for : {page_link}")
+
+
+def terabox(url) -> str:
+    if not path.isfile('terabox.txt'):
+        raise DirectDownloadLinkException("ERROR: terabox.txt not found")
+    session = create_scraper()
+    try:
+        jar = MozillaCookieJar('terabox.txt')
+        jar.load()
+        cookie_string = ''
+        for cookie in jar: cookie_string += f'{cookie.name}={cookie.value}; '
+        session.cookies.update(jar)
+        res = session.request('GET', url)
+        key = res.url.split('?surl=')[-1]
+        soup = BeautifulSoup(res.content, 'lxml')
+        jsToken = None
+        for fs in soup.find_all('script'):
+            fstring = fs.string
+            if fstring and fstring.startswith('try {eval(decodeURIComponent'):
+                jsToken = fstring.split('%22')[1]
+        headers = {"Cookie": cookie_string}
+        res = session.request(
+            'GET', f'https://www.terabox.com/share/list?app_id=250528&jsToken={jsToken}&shorturl={key}&root=1', headers=headers)
+        result = res.json()
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}")
+    if result['errno'] != 0: raise DirectDownloadLinkException(f"ERROR: '{result['errmsg']}' Check cookies")
+    result = result['list']
+    if len(result) > 1:
+        raise DirectDownloadLinkException(
+            "ERROR: Can't download mutiple files")
+    result = result[0]
+    
+    if result['isdir'] != '0':
+        raise DirectDownloadLinkException("ERROR: Can't download folder")
+    
+    try:
+        dlink = result['dlink']
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}, Check cookies")
+
+    return dlink
 
 
 def gdtot(url: str) -> str:
